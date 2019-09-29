@@ -38,7 +38,12 @@ function listEvents(auth, timeMin, timeMax) {
       orderBy: 'startTime',
     }, (err, res) => {
       if (err) return console.log('The API returned an error: ' + err);
-      const events = res.data.items;
+      let events = res.data.items.map((e) => {
+        return({
+          startTime: new Date(e.start.dateTime),
+          endTime: new Date(e.end.dateTime)
+        })
+      });
       resolve(events)
     });
   });
@@ -191,6 +196,9 @@ function checkOusideDates(date, start, end){
 function checkDateAvailability(event_times, year, month, day){
   let appointmentTimes = getAppointmentTimes(year, month, day);
   let availableTimes = appointmentTimes.filter(i => {
+    //Add padding break before & after
+    i.startTime.setMinutes(i.startTime.getMinutes() - APPOINTMENT_BREAK_MINUTES)
+    i.endTime.setMinutes(i.endTime.getMinutes() + APPOINTMENT_BREAK_MINUTES)
     let checkEvents = event_times.map(e => {
       if (
         checkInsideDates(i.startTime, e.startTime, e.endTime)
@@ -231,15 +239,16 @@ function checkHour(hour, today){
   if (hour < 0 || hour >= 24 ){ return false }
   return true;
 }
-function checkMinutes(minutes, today){
-  if (checkIfNaN(minutes)){ return false; }
-  if (hour < 0 || minutes >= 60 ){ return false }
+function checkMinute(minute, today){
+  if (checkIfNaN(minute)){ return false; }
+  if (minute < 0 || minute >= 60 ){ return false }
   return true;
 }
 
 function checkDateRequirements(date, today){
-  let paddedDate = today
+  let paddedDate = today;
   paddedDate.setHours(paddedDate.getHours() + 24);
+  return date > paddedDate;
 }
 
 
@@ -273,18 +282,13 @@ async function getBookableDays(req, res) {
 
   let auth = await getAuthCredentials();
   let events = await listEvents(auth, minTime, maxTime);
-  let event_times = events.map((e) => {
-    return({
-      startTime: new Date(e.start.dateTime),
-      endTime: new Date(e.end.dateTime)
-    })
-  });
+  
   
   //https://stackoverflow.com/a/44957114
   const rangeDays = Array(maxTime.getDate()).fill(1).map((x, y) => x + y);
 
   let availableDates = rangeDays.map(i => {
-    let getTimesForDate = checkDateAvailability(event_times, +req.query.year, +req.query.month, i);
+    let getTimesForDate = checkDateAvailability(events, +req.query.year, +req.query.month, i);
     if (getTimesForDate.length > 0){
       return { "day": i,  "hasTimeSlots": true };
     } else {
@@ -317,7 +321,7 @@ async function getTimeSlots(req, res) {
     });
     return
   }
-  //CHECK: valid day
+  
   //CHECK: GT then min month/year
 
   var minTime = new Date(Date.UTC(+req.query.year, +(req.query.month)-1, +(req.query.day), APPOINTMENT_START_HOUR, 0, 0));
@@ -325,14 +329,7 @@ async function getTimeSlots(req, res) {
   
   let auth = await getAuthCredentials();
   let events = await listEvents(auth, minTime, maxTime);
-  
-  let event_times = events.map((e) => {
-    return({
-      startTime: new Date(e.start.dateTime),
-      endTime: new Date(e.end.dateTime)
-    });
-  });
-  let availableTimeSlots = checkDateAvailability(event_times, +req.query.year, +req.query.month, +req.query.day);
+  let availableTimeSlots = checkDateAvailability(events, +req.query.year, +req.query.month, +req.query.day);
   
   res.send({
     "success": true,
@@ -345,13 +342,70 @@ async function getTimeSlots(req, res) {
 //POST  /book?year=yyyy&month=MM&day=dd&hour=hh&minute=mm
 */
 async function bookTimeSlot(req, res) {
-  console.log(req.query);
+  //Check if it contains fields
+  const today = new Date();
+  if (
+    !checkYear(+req.query.year, today) ||
+    !checkMonth(+req.query.month, today) ||
+    !checkDay(+req.query.day, +req.query.month, +req.query.year) ||
+    !checkHour(+req.query.hour) ||
+    !checkMinute(+req.query.minute)
+  ){
+    res.send({
+      "success": false,
+      "days": "Invalid input"
+    });
+    return
+  }
+
+  
+
+  /*
+  Cannot book outside bookable timeframe: The time slot provided was not on a weekday between 9 am and 5 pm
+  */
 
   var createDateTime = new Date(Date.UTC(+req.query.year, +(req.query.month)-1, +(req.query.day), +(req.query.hour), +(req.query.minute), 0));
   
+  //Check if time is less than today 
+  if (today > createDateTime){
+    res.send ({
+      "success": false,
+      "message": "Cannot book time in the past"
+    })
+  }
+
+  
+  //Cannot book with less than 24 hours in advance
+  if (check24Hours(createDateTime, today) === false){
+    res.send ({
+      "success": false,
+      "message": "Cannot book with less than 24 hours in advance"
+    })
+    return;
+  }
+  
+
+  /*
+  Cannot book outside bookable timeframe: The time slot provided was not on a weekday between 9 am and 5 pm
+
+  */
+
+
   let auth = await getAuthCredentials();
+  //Get events from GOOGLE CAL
+  var minTime = new Date(Date.UTC(+req.query.year, +(req.query.month)-1, +(req.query.day), APPOINTMENT_START_HOUR, 0, 0));
+  var maxTime = new Date(Date.UTC(+req.query.year, +(req.query.month)-1, +(req.query.day), APPOINTMENT_END_HOUR, 0, 0));
+  let events = await listEvents(auth, minTime, maxTime);
+  //Get avalible timeslots
+  let availableTimeSlots = checkDateAvailability(events, +req.query.year, +req.query.month, +req.query.day);
+  
+  
+  /*
+  Invalid time slot
+  //The time slot provided was not one of the time slots returned in the GET available time slots request
+  
+  */
   let asd = await createEvent(auth, +req.query.year, +(req.query.month)-1, +(req.query.day), +(req.query.hour), +(req.query.minute))
-  console.log(asd);
   
   res.send({
     "success": true,
