@@ -3,29 +3,29 @@ const readline = require('readline');
 const { google } = require('googleapis');
 const express = require('express')
 
-const app = express()
-const port = 3000
 
+// - - - - - - - - - - - - - - - - - - - -
+// PARAMETERS
+// - - - - - - - - - - - - - - - - - - - -
 
-// If modifying these scopes, delete token.json.
-/*
-const SCOPES = [
-  'https://www.googleapis.com/auth/calendar.readonly',
-  'https://www.googleapis.com/auth/calendar.events'
-];
-*/
-const SCOPES = [
-  'https://www.googleapis.com/auth/calendar'
-];
-// The file token.json stores the user's access and refresh tokens, and is
-// created automatically when the authorization flow completes for the first
-// time.
+const SERVER_PORT = 3000
+const APPOINTMENT_START_HOUR = 9;
+const APPOINTMENT_END_HOUR = 18;
+const APPOINTMENT_DURATION_MINUTES = 40;
+const APPOINTMENT_BREAK_MINUTES = 5;
+
+// Google API Scope
+const SCOPES = ['https://www.googleapis.com/auth/calendar'];
+//Token file location from/for Google Auth
 const TOKEN_PATH = 'token.json';
 
+const MINUTE_MILLISECONDS = 60000;
 
 // - - - - - - - - - - - - - - - - - - - -
 //  GOOGLE API
 // - - - - - - - - - - - - - - - - - - - -
+
+// 
 function listEvents(auth, timeMin, timeMax) {
   const calendar = google.calendar({version: 'v3', auth});
   return new Promise(resolve => {
@@ -134,14 +134,51 @@ function getAccessToken(oAuth2Client) {
 
 
 // - - - - - - - - - - - - - - - - - - - -
-// FUNCTIONS
+// FUNCTIONS - VERIFICATIONS
 // - - - - - - - - - - - - - - - - - - - -
 
-const APPOINTMENT_START_HOUR = 9;
-const APPOINTMENT_END_HOUR = 18;
-const APPOINTMENT_DURATION_MINUTES = 40;
-const APPOINTMENT_BREAK_MINUTES = 5;
+//Verification of parameters (checking to see if they are numbers & fit in appropriate ranges)
+function checkIfNaN(num){
+  return Number.isNaN(num);
+}
+function checkYear(year){
+  if (checkIfNaN(year)){ return false; }
+  return true;
+}
+function checkMonth(month){
+  if (checkIfNaN(month)){ return false; }
+  if (month < 1 || month > 12 ){ return false; }
+  return true;
+}
+function checkDay(day, month, year){
+  if (checkIfNaN(day)){ return false; }
+  //Checks for max days (use date to check for leap year)
+  let constDate = new Date(Date.UTC(year, month, 0, 0, 0, 0));
+  if (day < 0 || day > constDate.getDate() ){ return false; }
+  return true;
+}
+function checkHour(hour){
+  if (checkIfNaN(hour)){ return false; }
+  if (hour < 0 || hour >= 24 ){ return false }
+  return true;
+}
+function checkMinute(minute){
+  if (checkIfNaN(minute)){ return false; }
+  if (minute < 0 || minute >= 60 ){ return false }
+  return true;
+}
 
+//Checks that all parameters exist in the requests
+function checkParamsExist(params, keys){
+  let missingKeys = keys.filter((k) => !(k in params));
+  if (missingKeys.length > 0){
+    return false;
+  } else {
+    return true;
+  }
+}
+
+//Check if day is a weekday (condition: cannot book on a weekend)
 function checkWeekday(date){
   if (0 < date.getDay() && date.getDay() < 6){
     return true;
@@ -149,6 +186,11 @@ function checkWeekday(date){
     return false;
   }
 }
+
+
+// - - - - - - - - - - - - - - - - - - - -
+// FUNCTIONS - 
+// - - - - - - - - - - - - - - - - - - - -
 
 //
 function getAppointmentTimes(year, month, day){
@@ -164,6 +206,7 @@ function getAppointmentTimes(year, month, day){
       startTime: new Date(Date.UTC(year, month-1, day, Math.floor(i), (i%1)*60, 0)),
       endTime: new Date(Date.UTC(year, month-1, day, Math.floor(i), (i%1)*60+APPOINTMENT_DURATION_MINUTES, 0))
     }
+    //Do not add if it is less than 24 hours (condition)
     if (check24Hours(constData.endTime)){
       datetime_list.push(constData);
     }
@@ -171,13 +214,15 @@ function getAppointmentTimes(year, month, day){
   return(datetime_list);
 }
 
+//Verify if date is less than 24 hours from today (set condition for booking)
 function check24Hours(date){
   const today = new Date();
   today.setHours(today.getHours()+24);
   return date > today;
 }
 
-function checkInsideDates(date, start, end){
+//Check if a date is inside 2 dates (can't book a start/end within another booking)
+function checkIfInsideDates(date, start, end){
   if (start < date && date < end ){
     return true
   } else {
@@ -185,6 +230,7 @@ function checkInsideDates(date, start, end){
   }
 }
 
+/////////
 function checkOusideDates(date, start, end){
   if (start <= date && end <= date || start >= date && end >= date){
     return true
@@ -193,16 +239,20 @@ function checkOusideDates(date, start, end){
   }
 }
 
+//Check all available days on date, and against each event from Google Cal to see if the timeslot is avalible
 function checkDateAvailability(event_times, year, month, day){
   let appointmentTimes = getAppointmentTimes(year, month, day);
+  
   let availableTimes = appointmentTimes.filter(i => {
-    //Add padding break before & after
-    i.startTime.setMinutes(i.startTime.getMinutes() - APPOINTMENT_BREAK_MINUTES)
-    i.endTime.setMinutes(i.endTime.getMinutes() + APPOINTMENT_BREAK_MINUTES)
+    //Add padding break before & after (5 minutes required)
+    let adjusted_startTime = new Date(i.startTime.getTime() - (APPOINTMENT_BREAK_MINUTES * MINUTE_MILLISECONDS));
+    let adjusted_endTime = new Date(i.endTime.getTime() - (APPOINTMENT_BREAK_MINUTES * MINUTE_MILLISECONDS));
+    
+    //Verify each events against appointment times
     let checkEvents = event_times.map(e => {
       if (
-        checkInsideDates(i.startTime, e.startTime, e.endTime)
-        || checkInsideDates(i.endTime, e.startTime, e.endTime))
+        checkIfInsideDates(adjusted_startTime, e.startTime, e.endTime) ||
+        checkIfInsideDates(adjusted_endTime, e.startTime, e.endTime))
       {
         return false;
       } else {
@@ -211,49 +261,19 @@ function checkDateAvailability(event_times, year, month, day){
     });
     return !checkEvents.includes(false)
   })
-
   return availableTimes;
 }
 
-function checkIfNaN(num){
-  return Number.isNaN(num);
-}
-function checkYear(year, today){
-  if (checkIfNaN(year)){ return false; }
-  return true;
-}
-function checkMonth(month, today){
-  if (checkIfNaN(month)){ return false; }
-  if (month < 1 || month > 12 ){ return false; }
-  return true;
-}
-function checkDay(day, month, year){
-  if (checkIfNaN(day)){ return false; }
-  let constDate = new Date(Date.UTC(year, month, 0, 0, 0, 0));
-  console.log(day, constDate, constDate.getDate())
-  if (day < 0 || day > constDate.getDate() ){ return false; }
-  return true;
-}
-function checkHour(hour, today){
-  if (checkIfNaN(hour)){ return false; }
-  if (hour < 0 || hour >= 24 ){ return false }
-  return true;
-}
-function checkMinute(minute, today){
-  if (checkIfNaN(minute)){ return false; }
-  if (minute < 0 || minute >= 60 ){ return false }
-  return true;
-}
-
-function checkDateRequirements(date, today){
-  let paddedDate = today;
-  paddedDate.setHours(paddedDate.getHours() + 24);
-  return date > paddedDate;
-}
 
 
-
-
+//Response error format
+function responseError(res, message){
+  res.send({
+    "success": false,
+    "message": message
+  })
+  return;
+}
 
 
 
@@ -261,13 +281,25 @@ function checkDateRequirements(date, today){
 // ROUTES
 // - - - - - - - - - - - - - - - - - - - -
 
+/*
+GET  /days?year=yyyy&month=mm
+- - Gets all days with atleast 1 bookable day
+*/
 async function getBookableDays(req, res) {
-  console.log(req.query)
-  // Validate querys
+  //VERIFICATION: Check params
+  if (checkParamsExist(req.query, ['year', 'month']) === false){
+    res.send({
+      "success": false,
+      "days": "Missing param"
+    });
+    return
+  }
+
+  //VERIFICATION: Check param values
   const today = new Date();
   if (
-    !checkYear(+req.query.year, today) ||
-    !checkMonth(+req.query.month, today)
+    !checkYear(+req.query.year) ||
+    !checkMonth(+req.query.month)
   ){
     res.send({
       "success": false,
@@ -280,11 +312,26 @@ async function getBookableDays(req, res) {
   var maxTime = new Date(Date.UTC(+req.query.year, +(req.query.month), 1, 0, 0, 0));
   maxTime.setDate(maxTime.getDate() - 1) //Pick first day of month then subtract 1 day
 
+  //VERIFICATION: Check if book in past (checks against max date)
+  if (today > maxTime){
+    responseError(res, "Cannot book time in the past");
+    return
+  }
+  //VERIFICATION: Cannot book with less than 24 hours in advance
+  if (check24Hours(maxTime, today) === false){
+    responseError(res, "Cannot book with less than 24 hours in advance");
+    return
+  }
+
+  /* 
+  - - PASS STANDARD VERIFICATION
+  */
+
+  //Get events from Google Calendar
   let auth = await getAuthCredentials();
   let events = await listEvents(auth, minTime, maxTime);
   
-  
-  //https://stackoverflow.com/a/44957114
+  //Create an array of indices (pre-ES6 from https://stackoverflow.com/a/44957114)
   const rangeDays = Array(maxTime.getDate()).fill(1).map((x, y) => x + y);
 
   let availableDates = rangeDays.map(i => {
@@ -304,28 +351,51 @@ async function getBookableDays(req, res) {
 
 
 /*
-  //GET  /timeslots?year=yyyy&month=mm&day=dd
+GET /timeslots?year=yyyy&month=mm&day=dd
+- Book date and receive confirmation
 */
 async function getTimeSlots(req, res) {
-  console.log(req.query)
-  // Validate querys
+  //VERIFICATION: Check params
+  if (checkParamsExist(req.query, ['year', 'month', 'day']) === false){
+    responseError(res, "Missing input");
+    return
+  }
+
   const today = new Date();
+  //VERIFICATION: Check param values
   if (
-    !checkYear(+req.query.year, today) ||
-    !checkMonth(+req.query.month, today) ||
+    !checkYear(+req.query.year) ||
+    !checkMonth(+req.query.month) ||
     !checkDay(+req.query.day, +req.query.month, +req.query.year)
   ){
-    res.send({
-      "success": false,
-      "days": "Invalid input"
-    });
+    responseError(res, "Invalid input");
+    return
+  }
+  
+  //VERIFICATION: The time slot provided was not on a weekday between 9 am and 5 pm
+  if (+(req.query.hour) < APPOINTMENT_START_HOUR && +(req.query.hour) > APPOINTMENT_END_HOUR){
+    responseError(res, "Cannot book outside bookable timeframe");
     return
   }
   
   //CHECK: GT then min month/year
-
   var minTime = new Date(Date.UTC(+req.query.year, +(req.query.month)-1, +(req.query.day), APPOINTMENT_START_HOUR, 0, 0));
   var maxTime = new Date(Date.UTC(+req.query.year, +(req.query.month)-1, +(req.query.day), APPOINTMENT_END_HOUR, 0, 0));
+
+  //VERIFICATION: Check if book in past
+  if (today > maxTime){
+    responseError(res, "Cannot book time in the past");
+    return
+  }
+  //VERIFICATION: Cannot book with less than 24 hours in advance
+  if (check24Hours(maxTime, today) === false){
+    responseError(res, "Cannot book with less than 24 hours in advance");
+    return
+  }
+
+  /* 
+  - - PASS STANDARD VERIFICATION
+  */
   
   let auth = await getAuthCredentials();
   let events = await listEvents(auth, minTime, maxTime);
@@ -339,10 +409,17 @@ async function getTimeSlots(req, res) {
 
 
 /*
-//POST  /book?year=yyyy&month=MM&day=dd&hour=hh&minute=mm
+POST  /book?year=yyyy&month=MM&day=dd&hour=hh&minute=mm
+- Book date and receive confirmation
 */
 async function bookTimeSlot(req, res) {
-  //Check if it contains fields
+  //VERIFICATION: Check params
+  if (checkParamsExist(req.query, ['year', 'month', 'day', 'hour', 'minute']) === false){
+    responseError(res, "Missing input");
+    return
+  }
+  
+  //VERIFICATION: Check param values
   const today = new Date();
   if (
     !checkYear(+req.query.year, today) ||
@@ -351,87 +428,71 @@ async function bookTimeSlot(req, res) {
     !checkHour(+req.query.hour) ||
     !checkMinute(+req.query.minute)
   ){
-    res.send({
-      "success": false,
-      "days": "Invalid input"
-    });
+    responseError(res, "Invalid input"); //correct?
+    return
+  }
+  
+  //VERIFICATION: The time slot provided was not on a weekday between 9 am and 5 pm
+  if (+(req.query.hour) < APPOINTMENT_START_HOUR && +(req.query.hour) > APPOINTMENT_END_HOUR){
+    responseError(res, "Cannot book outside bookable timeframe");
     return
   }
 
-  
-
-  /*
-  Cannot book outside bookable timeframe: The time slot provided was not on a weekday between 9 am and 5 pm
-  */
-
+  //Need to create time for testing
   var createDateTime = new Date(Date.UTC(+req.query.year, +(req.query.month)-1, +(req.query.day), +(req.query.hour), +(req.query.minute), 0));
   
-  //Check if time is less than today 
+  //VERIFICATION: Check if book in past
   if (today > createDateTime){
-    res.send ({
-      "success": false,
-      "message": "Cannot book time in the past"
-    })
+    responseError(res, "Cannot book time in the past");
+    return
   }
-
   
-  //Cannot book with less than 24 hours in advance
+  //VERIFICATION: Cannot book with less than 24 hours in advance
   if (check24Hours(createDateTime, today) === false){
-    res.send ({
-      "success": false,
-      "message": "Cannot book with less than 24 hours in advance"
-    })
-    return;
+    responseError(res, "Cannot book with less than 24 hours in advance");
+    return
   }
-  
 
-  /*
-  Cannot book outside bookable timeframe: The time slot provided was not on a weekday between 9 am and 5 pm
-
+  /* 
+  - - PASS STANDARD VERIFICATION
   */
 
-
+  //Get events from Google Calendar
   let auth = await getAuthCredentials();
-  //Get events from GOOGLE CAL
   var minTime = new Date(Date.UTC(+req.query.year, +(req.query.month)-1, +(req.query.day), APPOINTMENT_START_HOUR, 0, 0));
   var maxTime = new Date(Date.UTC(+req.query.year, +(req.query.month)-1, +(req.query.day), APPOINTMENT_END_HOUR, 0, 0));
   let events = await listEvents(auth, minTime, maxTime);
-  //Get avalible timeslots
   let availableTimeSlots = checkDateAvailability(events, +req.query.year, +req.query.month, +req.query.day);
+  console.log(createDateTime)
+  console.log(availableTimeSlots)
+  console.log(availableTimeSlots.map((e) => createDateTime - e.startTime))
+  console.log(availableTimeSlots.filter((e) => (createDateTime - e.startTime) === 0).length > 0)
+  //Check to see if event exists (if dates are same, diffrence should be 0)
+  if (availableTimeSlots.filter((e) => (createDateTime - e.startTime) === 0).length > 0){
+    //Event space found!
+    console.log('woop')
+    let googleCalEvent = await createEvent(auth, +req.query.year, +(req.query.month)-1, +(req.query.day), +(req.query.hour), +(req.query.minute))
+    
+    res.send({
+      "success": true,
+      "startTime": googleCalEvent.startTime,
+      "endTime": googleCalEvent.endTime
+    });
+    
+  } else {
+    //No space found
+    console.log('boop')
+    responseError(res,  "Invalid time slot");
+  }
   
-  
-  /*
-  Invalid time slot
-  //The time slot provided was not one of the time slots returned in the GET available time slots request
-  
-  */
-  let asd = await createEvent(auth, +req.query.year, +(req.query.month)-1, +(req.query.day), +(req.query.hour), +(req.query.minute))
-  
-  res.send({
-    "success": true,
-    "startTime": "asd",
-    "endTime": "dsa"
-  });
 }
 
 
-/*
-- All appointments are 40 minutes long and have fixed times, starting from 9–9:40 am
-- Ensure there is always a 5 minute break in between each appointment
-- Appointments can only be booked during weekdays from 9 am to 6 pm
-- Bookings can only be made at least 24 hours in advance
-- Appointments cannot be booked in the past
-- For simplicity, use UTC time for all bookings and days
-*/
+// - - - - - - - - - - - - - - - - - - - -
+// PATHS
+// - - - - - - - - - - - - - - - - - - - -
 
-
-
-/*
-PATHS
-*/
-
-
-app.get('/', (req, res) => res.send('Hello World!'))
+const app = express()
 
 //GET  /days?year=yyyy&month=mm
 app.get('/days', (req, res) => getBookableDays(req, res));
@@ -440,5 +501,4 @@ app.get('/timeslots', (req, res) => getTimeSlots(req, res));
 //POST  /book?year=yyyy&month=MM&day=dd&hour=hh&minute=mm
 app.post('/book', (req, res) => bookTimeSlot(req, res));
 
-
-app.listen(port, () => console.log(`Example app listening on port ${port}!`))
+app.listen(SERVER_PORT, () => console.log(`Example app listening on port ${SERVER_PORT}!`))
