@@ -1,6 +1,6 @@
 # booking-calendar-api
 
-A NodeJS that can read and book appointment using Google's Calendar API. The server authentication is based off the [Google Node.JS Sample.](https://developers.google.com/calendar/quickstart/nodejs). All times are in UTC.
+A NodeJS that can read and book appointment using Google's Calendar API. The server authentication is based off the [Google Node.JS Sample](https://developers.google.com/calendar/quickstart/nodejs). All times are in UTC.
 
 *Designed for specific requirements*
 
@@ -8,8 +8,10 @@ A NodeJS that can read and book appointment using Google's Calendar API. The ser
 
 Before running the site, ensure the following are installed and your terminal can run the following (developed on the following):
 
+```
 node v11.11.0
 npm v6.7.0
+```
 
 You will also need a Google account to use their API. Create a project [here](https://console.developers.google.com/apis/) and create the credentials:
 
@@ -21,7 +23,7 @@ You will also need a Google account to use their API. Create a project [here](ht
 
 Before running the server, you will need to install npm packages by running the command `npm install` in the root folder (eg. `.booking-calendar-api/`)
 
-To start the server, input the command `node .` into your terminal to start the server. You can also run a hot-loading server by using the command `nodemon .`.
+To start the server, input the command `node .` into your terminal to start the server. You can also run a hot-loading server by using the command `nodemon .`
 
 ## Authenticating the application
 
